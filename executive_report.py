@@ -937,6 +937,239 @@ def executive_memo_pdf(data: dict[str, Any]) -> bytes:
     return buffer.getvalue()
 
 
+def cfo_summary_pdf(data: dict[str, Any]) -> bytes:
+    """Render the compact, one-page CFO audit summary.
+
+    The full executive memo intentionally spans multiple pages. This variant
+    keeps the headline numbers, flagged contracts, journal impact, and sign-off
+    on a single page for a CFO review packet.
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        leftMargin=0.55 * inch,
+        rightMargin=0.55 * inch,
+        topMargin=0.55 * inch,
+        bottomMargin=0.48 * inch,
+        title="FinAdvantage CFO Audit Summary",
+        author="FinAdvantage AI Digital Controllership",
+        subject=REPORT_SUBTITLE,
+    )
+    styles = _pdf_styles()
+    styles.add(
+        ParagraphStyle(
+            name="FACfoTitle",
+            fontName="Helvetica-Bold",
+            fontSize=19,
+            leading=21,
+            textColor=INK,
+            spaceAfter=2,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="FACfoSub",
+            fontName="Helvetica-Bold",
+            fontSize=8.5,
+            leading=10,
+            textColor=PURPLE,
+            spaceAfter=6,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="FACfoH2",
+            fontName="Helvetica-Bold",
+            fontSize=8.6,
+            leading=10,
+            textColor=INDIGO,
+            spaceBefore=7,
+            spaceAfter=3,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="FACfoBody",
+            fontName="Helvetica",
+            fontSize=7.3,
+            leading=10,
+            textColor=INK,
+            spaceAfter=3,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="FACfoCell",
+            fontName="Helvetica",
+            fontSize=6.2,
+            leading=7.6,
+            textColor=INK,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="FACfoCellMono",
+            fontName="Courier",
+            fontSize=6.0,
+            leading=7.6,
+            textColor=INK,
+        )
+    )
+
+    def kpi_cell(value: str, label: str) -> Paragraph:
+        return Paragraph(
+            f"<font size='13' color='#1E1B4B'><b>{_pdf_escape(value)}</b></font>"
+            f"<br/><font size='5.5' color='#64748B'>{_pdf_escape(label)}</font>",
+            styles["FAKpi"],
+        )
+
+    story: list[Any] = []
+    story.append(Paragraph("FINADVANTAGE", styles["FABrand"]))
+    story.append(Paragraph("AI Digital Controllership", styles["FABrandSub"]))
+    story.append(Paragraph("CFO Audit Summary", styles["FACfoTitle"]))
+    story.append(Paragraph("ASC 606 Month-End Contract Check", styles["FACfoSub"]))
+    story.append(
+        HRFlowable(width="100%", thickness=1.2, color=PURPLE, spaceBefore=0, spaceAfter=5)
+    )
+
+    meta = Table(
+        [[
+            Paragraph("REPORTING PERIOD", styles["FAMetaLabel"]),
+            Paragraph(REPORT_PERIOD, styles["FAMetaValue"]),
+            Paragraph("AS OF", styles["FAMetaLabel"]),
+            Paragraph(REPORT_AS_OF, styles["FAMetaValue"]),
+            Paragraph("STATUS", styles["FAMetaLabel"]),
+            Paragraph(REPORT_STATUS, styles["FAMetaValue"]),
+        ]],
+        colWidths=[0.95 * inch, 1.3 * inch, 0.55 * inch, 1.3 * inch, 0.55 * inch, 1.75 * inch],
+    )
+    meta.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
+                ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, LINE),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(meta)
+
+    kpis = Table(
+        [[
+            kpi_cell(_pdf_money(data["recognized"]), "TOTAL ERP REVENUE CHECKED"),
+            kpi_cell(_pdf_money(data["overstated"]), "OVERSTATED REVENUE CAUGHT"),
+            kpi_cell(str(data["exceptions"]), "CONTRACTS FLAGGED"),
+            kpi_cell(
+                _pdf_money(data["recognized"] - data["overstated"]),
+                "TRUE GAAP COMPLIANT REVENUE",
+            ),
+        ]],
+        colWidths=[1.85 * inch, 1.85 * inch, 1.5 * inch, 2.1 * inch],
+    )
+    kpis.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, LINE),
+                ("LINEABOVE", (0, 0), (-1, 0), 2.2, PURPLE),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    story.append(Spacer(1, 5))
+    story.append(kpis)
+
+    story.append(Paragraph("Executive Summary", styles["FACfoH2"]))
+    story.append(Paragraph(_pdf_escape(data["executive_summary"]), styles["FACfoBody"]))
+
+    story.append(Paragraph("Flagged Contracts", styles["FACfoH2"]))
+    rows: list[list[Any]] = [
+        [
+            Paragraph("CUSTOMER / ERP", styles["FATH"]),
+            Paragraph("ASC 606 ISSUE", styles["FATH"]),
+            Paragraph("REPORTED", styles["FATH"]),
+            Paragraph("GAAP", styles["FATH"]),
+            Paragraph("OVERSTATED", styles["FATH"]),
+        ]
+    ]
+    exposures = data["exposures"][:8]
+    for row in exposures:
+        rows.append(
+            [
+                Paragraph(
+                    f"<b>{_pdf_escape(row['customer'])}</b><br/>"
+                    f"<font size='5.4' color='#64748B'>{_pdf_escape(row['erp'])}</font>",
+                    styles["FACfoCell"],
+                ),
+                Paragraph(_pdf_escape(row["loophole"]), styles["FACfoCell"]),
+                Paragraph(_pdf_money(row["recognized"]), styles["FACfoCellMono"]),
+                Paragraph(_pdf_money(row["supportable"]), styles["FACfoCellMono"]),
+                Paragraph(
+                    f"<font color='#B91C1C'><b>{_pdf_money(row['overstated'])}</b></font>",
+                    styles["FACfoCellMono"],
+                ),
+            ]
+        )
+    if not exposures:
+        rows.append(
+            [Paragraph("No ASC 606 exceptions identified.", styles["FACfoCell"]), "", "", "", ""]
+        )
+    flagged = Table(
+        rows,
+        colWidths=[1.85 * inch, 2.65 * inch, 0.75 * inch, 0.75 * inch, 0.8 * inch],
+        repeatRows=1,
+    )
+    flagged.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), DEEP),
+                ("GRID", (0, 0), (-1, -1), 0.3, LINE),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, PALE]),
+            ]
+        )
+    )
+    story.append(flagged)
+    remaining = len(data["exposures"]) - len(exposures)
+    if remaining > 0:
+        story.append(
+            Paragraph(
+                f"+ {remaining} additional flagged contract(s) included in the full exception schedule.",
+                styles["FABrandSub"],
+            )
+        )
+
+    story.append(Paragraph("Journal Entry Impact", styles["FACfoH2"]))
+    story.append(_pdf_journal_callout(data, styles))
+
+    story.append(Paragraph("Recommended Next Actions", styles["FACfoH2"]))
+    for index, recommendation in enumerate(data["recommendations"][:3], start=1):
+        story.append(
+            Paragraph(
+                f"<b>{index}.</b> {_pdf_escape(recommendation)}",
+                styles["FACfoBody"],
+            )
+        )
+
+    story.append(Paragraph("Sign-off", styles["FACfoH2"]))
+    story.append(_pdf_signoff_table(styles))
+
+    doc.build(story, onFirstPage=_draw_header_footer, onLaterPages=_draw_header_footer)
+    return buffer.getvalue()
+
+
 def report_filename(extension: str) -> str:
     extension = extension.lstrip(".").lower()
     return f"FinAdvantage_ASC606_Executive_Audit_Memo_20261031.{extension}"

@@ -1,13 +1,16 @@
 # FinAdvantage ASC 606 Contract-to-Ledger Exception Gate
 
-An ASC 606 revenue-recognition audit workbench built with Streamlit. It scans a portfolio of contracts against a deterministic loophole library, generates the corresponding journal entries, and produces an executive audit memo.
+A single-page ASC 606 month-end close workflow built with Streamlit. It scans a portfolio of contracts against a deterministic loophole library, shows the contract evidence beside the ERP number, and generates balanced fixing entries plus a one-page CFO memo.
 
 ## What it does
 
-- **Exception Gate** — scans sample deals or uploaded contracts and ranks ASC 606 exceptions by exposure.
-- **Journal Entries** — generates balanced debit/credit entries and summarizes their ledger impact.
-- **Deal Sandbox** — models a custom deal or pre-fills the form from an uploaded contract.
-- **Executive Audit Memo** — assembles findings, exposures, journal impact, and sign-off into downloadable PDF, HTML, and exception-CSV reports.
+The page runs top to bottom as a three-step close:
+
+1. **Select Data Source** — audit the pre-loaded 12-deal Q4 SaaS batch instantly, or upload one client contract (digital, scanned, or hybrid PDF) with an optional ERP ledger CSV.
+2. **Review ASC 606 Red Flags** — compare booked ERP revenue with the exact contract sentence behind each flag, read a plain-English explanation, and view reported vs. compliant revenue by contract.
+3. **Resolve & Export** — preview balanced journal entries and download the CSV import file or a one-page CFO audit summary PDF.
+
+KPI cards summarize total ERP revenue checked, overstated revenue caught, contracts flagged, and true GAAP-compliant revenue. All uploaded files are processed in volatile memory only; nothing is written to disk or retained after the session closes.
 
 ## Run locally
 
@@ -45,10 +48,12 @@ If the binaries are missing, digital pages still parse normally and the app show
 
 | File | Purpose |
 | --- | --- |
-| `app.py` | Streamlit UI, hybrid PDF parser, upload workflow, and tab orchestration |
+| `app.py` | Single-page three-step Streamlit workflow |
+| `workflow_ui.py` | Theme, KPI cards, audit tables, evidence inspector, and charts |
+| `upload_parser.py` | Hybrid PDF text/OCR extraction, CSV ledger mapping, custom scan builder |
 | `forensic_scanner.py` | Deterministic ASC 606 exception scanner |
-| `journal_generator.py` | Journal entry generation and totals |
-| `executive_report.py` | PDF, HTML, and CSV report generation |
+| `journal_generator.py` | Journal entry generation, totals, and CSV export |
+| `executive_report.py` | Report data assembly, one-page CFO summary PDF, and legacy HTML/CSV reports |
 | `sample_data.py` | Sample portfolio of 12 deals |
 | `requirements.txt` | Python runtime dependencies |
 | `packages.txt` | Streamlit Cloud system packages (`tesseract-ocr`, `poppler-utils`) |
