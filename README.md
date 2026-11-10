@@ -6,9 +6,9 @@ A single-page ASC 606 month-end close workflow built with Streamlit. It scans a 
 
 The page runs top to bottom as a three-step close:
 
-1. **Select Data Source** — audit the pre-loaded 12-deal Q4 SaaS batch instantly, or upload one client contract (digital, scanned, or hybrid PDF) with an optional ERP ledger CSV.
-2. **Review ASC 606 Red Flags** — compare booked ERP revenue with the exact contract sentence behind each flag, read a plain-English explanation, and view reported vs. compliant revenue by contract.
-3. **Resolve & Export** — preview balanced journal entries and download the CSV import file or a one-page CFO audit summary PDF.
+1. **Select Data Source** — audit the pre-loaded 12-deal Q4 SaaS batch instantly, or upload one client contract (digital, scanned, or hybrid PDF) with an optional ERP ledger CSV. A downloadable sample red-flag contract lets a first-time user test the uploader immediately.
+2. **Review ASC 606 Red Flags** — compare booked ERP revenue with the exact contract sentence behind each flag, read a plain-English explanation, record the controller sign-off (pending, approved, or waived with a timestamp), and view reported vs. compliant revenue by contract.
+3. **Resolve & Export** — review original reported revenue, approved reversal, and final certified GL revenue; then download balanced journal entries or a one-page CFO audit summary PDF.
 
 KPI cards summarize total ERP revenue checked, overstated revenue caught, contracts flagged, and true GAAP-compliant revenue. All uploaded files are processed in volatile memory only; nothing is written to disk or retained after the session closes.
 

@@ -204,9 +204,17 @@ def build_report_data(
     results: list[ScanResult],
     summary: dict[str, Any],
     totals: dict[str, Any],
+    signoffs: dict[str, dict[str, str]] | None = None,
+    approved_reversal: float | None = None,
+    certified_revenue: float | None = None,
 ) -> dict[str, Any]:
     """Build the complete memo payload from the scanned portfolio and JE batch."""
     exposures = _exposure_rows(results)
+    signoff_map = {
+        result.deal_id: signoffs[result.deal_id]
+        for result in results
+        if result.has_exception and signoffs and result.deal_id in signoffs
+    }
     data: dict[str, Any] = {
         "title": REPORT_TITLE,
         "subtitle": REPORT_SUBTITLE,
@@ -234,6 +242,11 @@ def build_report_data(
         "exposures": exposures,
         "findings": _finding_rows(results),
         "recommendations": CONTROL_RECOMMENDATIONS,
+        "signoffs": signoff_map,
+        "approved_reversal": float(approved_reversal or 0.0),
+        "certified_revenue": float(
+            certified_revenue if certified_revenue is not None else summary["total_recognized"]
+        ),
     }
     data["executive_summary"] = _executive_summary(data)
     return data
@@ -1164,6 +1177,22 @@ def cfo_summary_pdf(data: dict[str, Any]) -> bytes:
         )
 
     story.append(Paragraph("Sign-off", styles["FACfoH2"]))
+    signoffs = list((data.get("signoffs") or {}).values())
+    if signoffs:
+        approved = sum(1 for item in signoffs if str(item.get("status", "")).startswith("✅"))
+        pending = sum(1 for item in signoffs if str(item.get("status", "")).startswith("⏳"))
+        waived = sum(1 for item in signoffs if str(item.get("status", "")).startswith("⚠️"))
+        stamps = [str(item.get("at")) for item in signoffs if item.get("at")]
+        latest = max(stamps) if stamps else "No controller action recorded"
+        story.append(
+            Paragraph(
+                f"Controller status: <b>{approved} approved</b> · {pending} pending · "
+                f"{waived} waived. Latest action: {_pdf_escape(latest)}. "
+                f"Approved reversal: {_pdf_money(data['approved_reversal'], 2)}; "
+                f"certified GL revenue: {_pdf_money(data['certified_revenue'], 2)}.",
+                styles["FACfoBody"],
+            )
+        )
     story.append(_pdf_signoff_table(styles))
 
     doc.build(story, onFirstPage=_draw_header_footer, onLaterPages=_draw_header_footer)

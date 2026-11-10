@@ -7,14 +7,16 @@ import streamlit as st
 
 from executive_report import build_report_data, cfo_summary_pdf
 from forensic_scanner import ScanResult, portfolio_summary, scan_all
-from journal_generator import generate_journal_entries, journal_entries_to_csv, journal_totals
+from journal_generator import generate_journal_entries, journal_totals
 from sample_data import AS_OF_DATE, get_deals
 from upload_parser import (
     extract_pdf_document, first_ledger_row, infer_contract_facts, make_custom_result, read_ledger,
+    sample_contract_pdf,
 )
 from workflow_ui import (
-    audit_table, comparison_chart, inject_theme, inspector_html, journal_table, kpi_html,
-    money,
+    audit_table, comparison_chart, export_entries_with_signoff, governance_summary, inject_theme,
+    inspector_html, journal_table, kpi_html, money, render_exports, render_gl_summary,
+    render_signoff_control,
 )
 
 st.set_page_config(page_title="FinAdvantage | ASC 606 Month-End Contract Check", page_icon="◆", layout="wide")
@@ -27,6 +29,11 @@ B = "Option B: Upload Custom Client Contract (PDF) + ERP Ledger (CSV)"
 def reset_custom_scan() -> None:
     for key in ("custom_result", "custom_sig", "custom_booked"):
         st.session_state.pop(key, None)
+    st.session_state.get("signoffs", {}).pop("SBX-001", None)
+    st.session_state.pop("signoff_SBX-001", None)
+
+
+signoffs: dict[str, dict[str, str]] = st.session_state.setdefault("signoffs", {})
 
 
 source_mode = st.session_state.get("source_mode", A)
@@ -35,6 +42,7 @@ results: list[ScanResult] = scan_all(get_deals()) if source_mode == A else ([cus
 summary = portfolio_summary(results)
 entries = generate_journal_entries(results)
 totals = journal_totals(entries)
+gov = governance_summary(results, signoffs, summary["total_recognized"])
 
 st.markdown(
     '<div class="fa-header"><div><div class="fa-title">FinAdvantage <span>|</span> '
@@ -65,6 +73,14 @@ with st.container(border=True):
             pdf_file = st.file_uploader("Custom client contract (PDF)", type=["pdf"], key="custom_pdf", on_change=reset_custom_scan)
         with col_csv:
             csv_file = st.file_uploader("ERP ledger (CSV, optional)", type=["csv"], key="custom_csv", on_change=reset_custom_scan)
+        st.download_button(
+            "📄 Download Sample Red-Flag Contract to Test Upload",
+            data=sample_contract_pdf(),
+            file_name="FinAdvantage_Sample_Red_Flag_Contract.pdf",
+            mime="application/pdf",
+            key="sample_contract",
+            help="Drop the downloaded file straight back into the PDF uploader above to see a live ASC 606 exception.",
+        )
         extraction, facts, ledger = None, {}, {}
         if pdf_file is not None:
             with st.spinner("Auto-detecting digital pages and scanned pages…"):
@@ -147,7 +163,7 @@ with st.container(border=True):
         flagged = [result for result in results if result.has_exception]
         left, right = st.columns([3, 2], gap="large")
         with left:
-            st.markdown(audit_table(results), unsafe_allow_html=True)
+            st.markdown(audit_table(results, gov["statuses"]), unsafe_allow_html=True)
         with right:
             if flagged:
                 ids = [result.deal_id for result in flagged]
@@ -161,6 +177,7 @@ with st.container(border=True):
                     key="inspect_deal",
                 )
                 st.markdown(inspector_html(by_id[selected]), unsafe_allow_html=True)
+                render_signoff_control(selected, gov["statuses"][selected])
             else:
                 st.success("No red flags. Every contract in this view passes the four ASC 606 checks.")
         if flagged:
@@ -184,27 +201,15 @@ with st.container(border=True):
         else:
             st.markdown(journal_table(entries, results), unsafe_allow_html=True)
             st.caption("Preview is summarized by customer. The CSV contains full line-level entries ready for NetSuite or QuickBooks import.")
-        report_data = build_report_data(results, summary, totals)
-        pdf_bytes = cfo_summary_pdf(report_data)
-        col_csv_btn, col_pdf_btn = st.columns(2)
-        with col_csv_btn:
-            st.download_button(
-                "📥 Download NetSuite / QuickBooks Fixing Entries (CSV)",
-                data=journal_entries_to_csv(entries),
-                file_name=f"FinAdvantage_ASC606_Fixing_Entries_{AS_OF_DATE:%Y%m%d}.csv",
-                mime="text/csv", type="primary", width="stretch", disabled=entries.empty,
-            )
-        with col_pdf_btn:
-            st.download_button(
-                "📄 Download 1-Page CFO Audit Summary Memo (Report)", data=pdf_bytes,
-                file_name=f"FinAdvantage_ASC606_CFO_Summary_{AS_OF_DATE:%Y%m%d}.pdf",
-                mime="application/pdf", type="primary", width="stretch",
-            )
-        debit_text = money(totals["debit_total"], 2).replace("$", "\\$")
-        credit_text = money(totals["credit_total"], 2).replace("$", "\\$")
-        st.caption(
-            f"Batch {totals['je_count']} entries · {debit_text} Dr = "
-            f"{credit_text} Cr · no ERP write-back performed."
+        render_gl_summary(
+            summary["total_recognized"], gov["approved_reversal"], gov["certified_revenue"],
+            gov["approved_count"], gov["flagged_count"],
         )
+        export_entries = export_entries_with_signoff(entries, gov["statuses"])
+        report_data = build_report_data(
+            results, summary, totals, signoffs=gov["statuses"],
+            approved_reversal=gov["approved_reversal"], certified_revenue=gov["certified_revenue"],
+        )
+        render_exports(export_entries, cfo_summary_pdf(report_data), totals, AS_OF_DATE)
 
 st.markdown('<div class="fa-footer">FinAdvantage AI Digital Controllership · ASC 606 Month-End Contract Check · Confidential</div>', unsafe_allow_html=True)

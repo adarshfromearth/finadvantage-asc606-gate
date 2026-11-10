@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import html
 import re
 from typing import Any
@@ -11,6 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from forensic_scanner import ScanResult
+from journal_generator import journal_entries_to_csv
 
 THEME = """
 <style>
@@ -47,6 +49,12 @@ div[data-testid="stFileUploaderDropzone"]{background:#F8FAFC;border:1.5px dashed
 .fa-table td{padding:.6rem .55rem;border-top:1px solid #F1F5F9;vertical-align:top;font-size:.68rem;line-height:1.45}.fa-table tr:hover td{background:#FCFBFF}
 .fa-sub2{display:block;color:#94A3B8;font-size:.56rem;margin-top:.1rem}.fa-num{font-family:"SFMono-Regular",Consolas,monospace;white-space:nowrap}.fa-red{color:#B91C1C;font-weight:700}
 .fa-pill{display:inline-block;border-radius:999px;padding:.2rem .45rem;font-size:.56rem;font-weight:800;white-space:nowrap}.fa-bad{background:#FEF2F2;color:#B91C1C;border:1px solid #FECACA}.fa-good{background:#F0FDF4;color:#166534;border:1px solid #BBF7D0}
+.fa-wait{background:#FFFBEB;color:#B45309;border:1px solid #FDE68A}.fa-waive{background:#F1F5F9;color:#475569;border:1px solid #CBD5E1}.fa-sign{display:block;margin-top:.22rem}
+.fa-gl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.7rem;margin:.35rem 0 .9rem}
+.fa-gl div{background:#F8FAFC;border:1px solid var(--line);border-radius:11px;padding:.7rem .8rem;min-width:0}
+.fa-gl label{display:block;color:var(--muted);font-size:.55rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+.fa-gl b{display:block;margin-top:.2rem;color:var(--deep);font-size:1.08rem;line-height:1.15;overflow-wrap:anywhere}
+.fa-gl .fa-gl-final{background:#F5F3FF;border-color:#C4B5FD}
 .fa-inspector{border:1px solid var(--line);border-radius:14px;padding:.9rem;background:#fff}.fa-inspector h3{margin:0 0 .55rem;font-size:.84rem}
 .fa-label{display:block;margin:.75rem 0 .28rem;color:#7C3AED;font-size:.55rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
 .fa-erp{padding:.65rem .7rem;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px}.fa-erp b{font-size:1.08rem}.fa-erp p{margin:.25rem 0 0;font-size:.62rem;color:var(--muted);line-height:1.45}
@@ -67,6 +75,16 @@ PLAIN_ENGLISH = {
     "UNDISCLOSED_FREE_MONTHS": "The free months lower the real price of the deal, so revenue must be spread across the whole service period, including free months.",
     "MONEY_BACK_TRIAL": "A trial that can be cancelled for a full refund is not yet a signed revenue contract, so trial-period revenue must wait.",
     "FEATURE_CONTINGENCY": "Revenue for the undelivered feature must wait until the customer actually receives and accepts it.",
+}
+
+SIGNOFF_PENDING = "⏳ Pending Review"
+SIGNOFF_APPROVED = "✅ Approved for GL Adjustment"
+SIGNOFF_WAIVED = "⚠️ Waived as Immaterial"
+SIGNOFF_OPTIONS = [SIGNOFF_PENDING, SIGNOFF_APPROVED, SIGNOFF_WAIVED]
+SIGNOFF_CSS = {
+    SIGNOFF_PENDING: "fa-wait",
+    SIGNOFF_APPROVED: "fa-good",
+    SIGNOFF_WAIVED: "fa-waive",
 }
 
 
@@ -144,7 +162,20 @@ def kpi_html(results: list[ScanResult], summary: dict[str, Any]) -> str:
     ) + "</div>"
 
 
-def audit_table(results: list[ScanResult]) -> str:
+def gl_summary_html(original: float, approved: float, final: float) -> str:
+    cards = [
+        ("Original Reported Revenue", money(original), ""),
+        ("Approved ASC 606 Reversal", money(approved), ""),
+        ("Final Certified GL Revenue", money(final), " fa-gl-final"),
+    ]
+    return '<div class="fa-gl">' + "".join(
+        f'<div class="{css.strip()}"><label>{label}</label><b>{value}</b></div>'
+        for label, value, css in cards
+    ) + "</div>"
+
+
+def audit_table(results: list[ScanResult], signoffs: dict[str, dict[str, str]] | None = None) -> str:
+    signoffs = signoffs or {}
     rows = []
     for result in results:
         pill = (
@@ -152,6 +183,12 @@ def audit_table(results: list[ScanResult]) -> str:
             if result.has_exception
             else '<span class="fa-pill fa-good">🟢 Compliant</span>'
         )
+        if result.has_exception:
+            signoff = signoffs.get(result.deal_id, {})
+            label = signoff.get("status", SIGNOFF_PENDING)
+            css = SIGNOFF_CSS.get(label, "fa-wait")
+            stamp = f'<span class="fa-sub2">{esc(signoff["at"])}</span>' if signoff.get("at") else ""
+            pill += f'<span class="fa-pill {css} fa-sign">{esc(label)}</span>{stamp}'
         rows.append(
             f'<tr><td><b>{esc(result.customer)}</b><span class="fa-sub2">{esc(result.deal_id)}</span></td>'
             f'<td class="fa-num">{money(result.recognized_to_date)}</td><td>{pill}</td>'
@@ -249,4 +286,101 @@ def journal_table(entries: pd.DataFrame, results: list[ScanResult]) -> str:
     return (
         f'<div class="fa-table-wrap"><table class="fa-table"><thead>{head}</thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
+def record_signoff(deal_id: str, widget_key: str) -> None:
+    """Persist the controller decision and the moment it was made."""
+    signoffs = st.session_state.setdefault("signoffs", {})
+    status = st.session_state[widget_key]
+    entry = signoffs.setdefault(deal_id, {})
+    if entry.get("status") != status:
+        entry["status"] = status
+        entry["at"] = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+
+def render_signoff_control(deal_id: str, saved: dict[str, str]) -> None:
+    status = saved.get("status", SIGNOFF_PENDING)
+    st.markdown('<div class="fa-label">Controller Sign-Off Status</div>', unsafe_allow_html=True)
+    st.radio(
+        "Controller Sign-Off Status",
+        SIGNOFF_OPTIONS,
+        index=SIGNOFF_OPTIONS.index(status) if status in SIGNOFF_OPTIONS else 0,
+        key=f"signoff_{deal_id}",
+        on_change=record_signoff,
+        args=(deal_id, f"signoff_{deal_id}"),
+        label_visibility="collapsed",
+    )
+    if saved.get("at"):
+        st.caption(f"Status recorded {saved['at']}")
+
+
+def governance_summary(results: list[ScanResult], signoffs: dict[str, dict[str, str]], original: float) -> dict[str, Any]:
+    """Build the controller status map and approved/final GL totals."""
+    statuses = {
+        result.deal_id: signoffs.get(result.deal_id, {"status": SIGNOFF_PENDING, "at": ""})
+        for result in results
+    }
+    approved = round(
+        sum(
+            result.overstated_revenue
+            for result in results
+            if result.has_exception
+            and statuses[result.deal_id]["status"] == SIGNOFF_APPROVED
+        ),
+        2,
+    )
+    return {
+        "statuses": statuses,
+        "approved_reversal": approved,
+        "certified_revenue": round(float(original) - approved, 2),
+        "approved_count": sum(
+            1 for result in results
+            if result.has_exception and statuses[result.deal_id]["status"] == SIGNOFF_APPROVED
+        ),
+        "flagged_count": sum(1 for result in results if result.has_exception),
+    }
+
+
+def export_entries_with_signoff(entries: pd.DataFrame, statuses: dict[str, dict[str, str]]) -> pd.DataFrame:
+    export = entries.copy()
+    if not export.empty:
+        export["Controller Sign-Off"] = export["Deal ID"].map(
+            lambda deal_id: statuses.get(deal_id, {}).get("status", SIGNOFF_PENDING)
+        )
+        export["Sign-Off Timestamp"] = export["Deal ID"].map(
+            lambda deal_id: statuses.get(deal_id, {}).get("at", "")
+        )
+    return export
+
+
+def render_gl_summary(original: float, approved: float, final: float,
+                      approved_count: int, flagged_count: int) -> None:
+    st.markdown(gl_summary_html(original, approved, final), unsafe_allow_html=True)
+    st.caption(
+        f"Certified total reflects {approved_count} of {flagged_count} flagged contracts marked "
+        "✅ Approved; pending and waived reversals are excluded."
+    )
+
+
+def render_exports(entries: pd.DataFrame, pdf_bytes: bytes, totals: dict[str, Any], batch_date: Any) -> None:
+    col_csv, col_pdf = st.columns(2)
+    with col_csv:
+        st.download_button(
+            "📥 Download NetSuite / QuickBooks Fixing Entries (CSV)",
+            data=journal_entries_to_csv(entries),
+            file_name=f"FinAdvantage_ASC606_Fixing_Entries_{batch_date:%Y%m%d}.csv",
+            mime="text/csv", type="primary", width="stretch", disabled=entries.empty,
+        )
+    with col_pdf:
+        st.download_button(
+            "📄 Download 1-Page CFO Audit Summary Memo (Report)", data=pdf_bytes,
+            file_name=f"FinAdvantage_ASC606_CFO_Summary_{batch_date:%Y%m%d}.pdf",
+            mime="application/pdf", type="primary", width="stretch",
+        )
+    debit_text = money(totals["debit_total"], 2).replace("$", "\\$")
+    credit_text = money(totals["credit_total"], 2).replace("$", "\\$")
+    st.caption(
+        f"Batch {totals['je_count']} entries · {debit_text} Dr = {credit_text} Cr · "
+        "no ERP write-back performed."
     )
