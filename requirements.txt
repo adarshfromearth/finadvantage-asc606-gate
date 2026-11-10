@@ -1,0 +1,7 @@
+streamlit==1.50.0
+pandas==2.3.3
+plotly==7.1.0
+pypdf==6.21.4
+# reportlab 5.x requires Python 3.10+; pin 3.6.13 for Python 3.9 compatibility.
+reportlab==3.6.13; python_version < "3.10"
+reportlab==5.1.0; python_version >= "3.10"
