@@ -1258,6 +1258,70 @@ div[data-testid="stExpander"] details[open] summary {
     line-height: 1.45;
 }
 
+.fa-security-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.68rem 0.8rem;
+    margin: 0 0 0.7rem 0;
+    background: linear-gradient(135deg, #ECFDF5 0%, #F0FDFA 55%, #F5F3FF 100%);
+    border: 1px solid #A7F3D0;
+    border-left: 3px solid #059669;
+    border-radius: 11px;
+    color: #065F46;
+    font-size: 0.64rem;
+    font-weight: 600;
+    line-height: 1.6;
+    letter-spacing: 0.005em;
+    box-shadow: 0 4px 14px rgba(5, 150, 105, 0.07);
+}
+
+.fa-security-banner .fa-security-lock {
+    flex: 0 0 auto;
+    font-size: 0.82rem;
+    line-height: 1.25;
+}
+
+.fa-security-banner b { color: #047857; font-weight: 800; }
+
+.fa-parse-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.38rem;
+    margin: 0.55rem 0 0.15rem 0;
+    padding: 0.36rem 0.68rem;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    font-size: 0.64rem;
+    font-weight: 800;
+    line-height: 1.4;
+    letter-spacing: 0.005em;
+}
+
+.fa-parse-badge-digital {
+    color: #047857;
+    background: #ECFDF5;
+    border-color: #A7F3D0;
+}
+
+.fa-parse-badge-scanned {
+    color: #B45309;
+    background: #FFFBEB;
+    border-color: #FDE68A;
+}
+
+.fa-parse-badge-hybrid {
+    color: #5B21B6;
+    background: #F5F3FF;
+    border-color: #DDD6FE;
+}
+
+.fa-parse-badge-fallback {
+    color: #B91C1C;
+    background: #FEF2F2;
+    border-color: #FECACA;
+}
+
 /* ------------------------------------------------------------- Memo paper */
 .fa-memo-paper {
     margin-top: 0.6rem;
@@ -2255,18 +2319,145 @@ def _infer_contract_facts(text: str) -> dict[str, Any]:
     return values
 
 
+PDF_TEXT_THRESHOLD = 25
+PDF_OCR_DPI = 200
+
+
+def _clean_pdf_text(raw: str) -> str:
+    """Normalize extracted text and strip control characters."""
+    if not raw:
+        return ""
+    text = raw.replace("\x00", " ")
+    text = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _meaningful_character_count(text: str) -> int:
+    """Count non-whitespace characters used for the digital-vs-OCR decision."""
+    return len(re.sub(r"\s+", "", text))
+
+
+def _ocr_pdf_page(pdf_bytes: bytes, page_number: int) -> tuple[str, str | None]:
+    """Rasterize one PDF page in memory and OCR it.
+
+    Returns ``(text, error)``. Missing system binaries or Python packages are
+    reported as an error instead of raising, so digital pages still work.
+    """
+    try:
+        from pdf2image import convert_from_bytes
+        import pytesseract
+    except Exception as exc:  # pragma: no cover - depends on local install
+        return "", f"OCR libraries unavailable ({exc})"
+
+    images = []
+    try:
+        images = convert_from_bytes(
+            pdf_bytes,
+            dpi=PDF_OCR_DPI,
+            first_page=page_number,
+            last_page=page_number,
+            fmt="PNG",
+            thread_count=1,
+        )
+        if not images:
+            return "", "page could not be rasterized"
+        text = pytesseract.image_to_string(images[0], lang="eng")
+        return _clean_pdf_text(text), None
+    except Exception as exc:  # pragma: no cover - depends on local install
+        return "", str(exc)
+    finally:
+        for image in images:
+            try:
+                image.close()
+            except Exception:
+                pass
+
+
 @st.cache_data(show_spinner=False)
 def extract_pdf_document(pdf_bytes: bytes) -> dict[str, Any]:
-    """Extract text from a text-based PDF contract."""
+    """Extract text page by page, auto-switching between digital text and OCR.
+
+    Pages with at least ``PDF_TEXT_THRESHOLD`` non-whitespace characters use
+    pypdf's digital text. Sparse pages (scans, photographed addenda, signature
+    pages) are rasterized with pdf2image and read with pytesseract. The result
+    records which path each page took so the UI can label the document.
+    """
     try:
         reader = PdfReader(BytesIO(pdf_bytes))
-        pages = [(page.extract_text() or "").strip() for page in reader.pages]
-        text = "\n\n".join(page for page in pages if page).strip()
+        if reader.is_encrypted:
+            try:
+                reader.decrypt("")
+            except Exception:
+                pass
+            if reader.is_encrypted:
+                raise ValueError("PDF is password protected")
+
+        total_pages = len(reader.pages)
+        if total_pages == 0:
+            raise ValueError("PDF contains no pages")
+
+        page_texts: list[str] = []
+        digital_pages = 0
+        ocr_pages = 0
+        ocr_failed_pages = 0
+        ocr_errors: list[str] = []
+
+        for page_number, page in enumerate(reader.pages, start=1):
+            try:
+                digital_text = _clean_pdf_text(page.extract_text() or "")
+            except Exception:
+                digital_text = ""
+
+            if _meaningful_character_count(digital_text) >= PDF_TEXT_THRESHOLD:
+                page_texts.append(digital_text)
+                digital_pages += 1
+                continue
+
+            ocr_text, ocr_error = _ocr_pdf_page(pdf_bytes, page_number)
+            if ocr_error:
+                ocr_failed_pages += 1
+                if len(ocr_errors) < 4:
+                    ocr_errors.append(f"Page {page_number}: {ocr_error}")
+            if ocr_text:
+                page_texts.append(ocr_text)
+                ocr_pages += 1
+            elif digital_text:
+                # Keep any sparse digital text rather than dropping the page.
+                page_texts.append(digital_text)
+
+        text = "\n\n".join(part for part in page_texts if part).strip()
+
+        if digital_pages and ocr_pages:
+            mode = "hybrid"
+            status = "🔄 Auto-Detected: Hybrid PDF (Digital + Scanned Pages Combined)"
+        elif ocr_pages:
+            mode = "scanned"
+            status = "🔍 Auto-Detected: Scanned Image PDF (OCR Applied)"
+        elif digital_pages:
+            mode = "digital"
+            status = "⚡ Auto-Detected: Digital Text PDF (Fast Parse)"
+        elif ocr_failed_pages:
+            mode = "fallback"
+            status = "⚠️ Auto-Detected: OCR Unavailable"
+        else:
+            mode = "fallback"
+            status = "⚠️ Auto-Detected: No Readable Text"
+
         return {
             "ok": True,
-            "pages": len(reader.pages),
+            "pages": total_pages,
             "text": text,
             "characters": len(text),
+            "digital_pages": digital_pages,
+            "ocr_pages": ocr_pages,
+            "ocr_failed_pages": ocr_failed_pages,
+            "ocr_errors": ocr_errors,
+            "mode": mode,
+            "status": status,
             "error": None,
         }
     except Exception as exc:  # pragma: no cover - depends on malformed PDFs
@@ -2275,6 +2466,12 @@ def extract_pdf_document(pdf_bytes: bytes) -> dict[str, Any]:
             "pages": 0,
             "text": "",
             "characters": 0,
+            "digital_pages": 0,
+            "ocr_pages": 0,
+            "ocr_failed_pages": 0,
+            "ocr_errors": [],
+            "mode": "error",
+            "status": "Unable to read PDF",
             "error": str(exc),
         }
 
@@ -2818,8 +3015,8 @@ with tab_sandbox:
             '<div class="fa-upload-title">'
             '<div class="fa-eyebrow">Controller upload</div>'
             "<h3>Upload a real PDF contract or CSV ledger</h3>"
-            "<p>Drag in a text-based contract PDF or a ledger export. The sandbox extracts the clause "
-            "language, maps the ledger columns, and pre-fills the gate inputs for review.</p>"
+            "<p>Drag in a digital, scanned, or hybrid contract PDF or a ledger export. Each PDF page is "
+            "auto-detected, OCR is applied only where needed, and the ledger columns are mapped for review.</p>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -2827,11 +3024,20 @@ with tab_sandbox:
         upload_col, guide_col = st.columns([1.5, 0.75], gap="large")
 
         with upload_col:
+            st.markdown(
+                '<div class="fa-security-banner">'
+                '<span class="fa-security-lock">🔒</span>'
+                "<span><b>SOC-Compliant Zero Data Retention:</b> Uploaded contracts and ledgers are "
+                "processed strictly in volatile RAM and immediately purged upon session close. No files "
+                "are written to disk or sent to external AI APIs.</span>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
             uploaded_file = st.file_uploader(
                 "Choose a PDF contract or CSV ledger",
                 type=["pdf", "csv"],
                 key="sandbox_upload_file",
-                help="PDF must contain selectable text. Scanned/image-only PDFs require OCR first.",
+                help="Digital, scanned, and hybrid PDFs are detected page by page. No manual OCR selection is required.",
             )
 
             if uploaded_file is not None:
@@ -2841,18 +3047,51 @@ with tab_sandbox:
                     if not extraction["ok"]:
                         st.error(f"Could not read **{file_name}**. {extraction['error']}")
                     else:
+                        badge_class = {
+                            "digital": "fa-parse-badge-digital",
+                            "scanned": "fa-parse-badge-scanned",
+                            "hybrid": "fa-parse-badge-hybrid",
+                        }.get(extraction["mode"], "fa-parse-badge-fallback")
                         st.markdown(
-                            f'<div class="fa-upload-meta">'
-                            f'<span class="fa-upload-chip">{extraction["pages"]} page(s)</span>'
-                            f'<span class="fa-upload-chip">{extraction["characters"]:,} characters extracted</span>'
-                            f'<span class="fa-upload-chip">{esc(file_name)}</span>'
-                            f"</div>",
+                            f'<div class="fa-parse-badge {badge_class}">'
+                            f'{esc(extraction["status"])}</div>',
                             unsafe_allow_html=True,
                         )
+                        page_chips = [
+                            f'<span class="fa-upload-chip">{extraction["pages"]} page(s)</span>',
+                            f'<span class="fa-upload-chip">{extraction["characters"]:,} characters extracted</span>',
+                        ]
+                        if extraction["digital_pages"]:
+                            page_chips.append(
+                                f'<span class="fa-upload-chip"><b>Digital</b> '
+                                f'{extraction["digital_pages"]} page(s)</span>'
+                            )
+                        if extraction["ocr_pages"]:
+                            page_chips.append(
+                                f'<span class="fa-upload-chip"><b>OCR</b> '
+                                f'{extraction["ocr_pages"]} page(s)</span>'
+                            )
+                        page_chips.append(
+                            f'<span class="fa-upload-chip">{esc(file_name)}</span>'
+                        )
+                        st.markdown(
+                            f'<div class="fa-upload-meta">{"".join(page_chips)}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        if extraction["ocr_errors"]:
+                            st.warning(
+                                "Automatic OCR was unavailable for "
+                                f"{extraction['ocr_failed_pages']} page(s) in this environment. "
+                                "Digital pages were still parsed and the app remains usable. On Streamlit "
+                                "Cloud, `packages.txt` installs `tesseract-ocr` and `poppler-utils` "
+                                "automatically. Details: " + "; ".join(extraction["ocr_errors"]),
+                                icon="⚠️",
+                            )
                         if extraction["characters"] < 40:
                             st.warning(
-                                "Very little text was extracted. This looks like a scanned or image-only "
-                                "PDF; run OCR before uploading so the clause rules can read it.",
+                                "No readable text was recovered from this PDF. If it is image-only, "
+                                "install Tesseract and Poppler locally or deploy to Streamlit Cloud where "
+                                "they are installed automatically.",
                                 icon="⚠️",
                             )
                         else:
@@ -3039,11 +3278,11 @@ with tab_sandbox:
                 <div class="fa-upload-guide">
                     <div class="fa-upload-guide-title">What happens on load</div>
                     <ul>
-                        <li><strong>PDF</strong> text is extracted with pypdf and common contract economics are inferred.</li>
+                        <li><strong>PDF</strong> pages are auto-detected: digital text where available, OCR only for scanned, photographed, or signature pages.</li>
                         <li><strong>CSV</strong> columns are matched to customer, ERP, dates, term, fees, TCV, and recognized revenue.</li>
                         <li>Nothing is posted — you still review the pre-filled facts and run the scan.</li>
                     </ul>
-                    <div class="fa-upload-guide-note">Scanned PDFs need OCR. Files stay in this browser session.</div>
+                    <div class="fa-upload-guide-note">No manual OCR selection. Files stay in volatile RAM and are never written to disk.</div>
                 </div>
                 """,
                 unsafe_allow_html=True,

@@ -22,8 +22,16 @@ The app opens at http://localhost:8501.
 
 ## Upload formats
 
-- **Contracts:** text-based PDF files. Scanned/image-only PDFs are not supported because the app extracts text with `pypdf`.
+- **Contracts:** digital, scanned, and hybrid PDFs. The parser checks each page individually: pages with at least 25 characters of clean selectable text use the digital text, while sparse or image-only pages are rasterized in memory and OCR'd with Tesseract. This also handles digital contracts with a scanned signature page.
 - **Ledgers:** CSV files. A template is available from the upload panel, and columns are mapped automatically.
+
+OCR needs the Tesseract and Poppler binaries. They are installed automatically on Streamlit Community Cloud from `packages.txt`. For local runs on macOS:
+
+```bash
+brew install tesseract poppler
+```
+
+If the binaries are missing, digital pages still parse normally and the app shows a warning rather than crashing.
 
 ## Deploy to Streamlit Community Cloud
 
@@ -31,17 +39,19 @@ The app opens at http://localhost:8501.
 2. In [Streamlit Community Cloud](https://share.streamlit.io), create a new app from the repository.
 3. Set the entrypoint to `app.py`.
 4. In **Advanced settings**, select **Python 3.12**.
-5. Deploy. `requirements.txt` installs all runtime dependencies, and `.streamlit/config.toml` applies the purple theme.
+5. Deploy. `requirements.txt` installs all Python dependencies, `packages.txt` installs the OCR system binaries, and `.streamlit/config.toml` applies the purple theme.
 
 ## Project structure
 
 | File | Purpose |
 | --- | --- |
-| `app.py` | Streamlit UI, upload workflow, and tab orchestration |
+| `app.py` | Streamlit UI, hybrid PDF parser, upload workflow, and tab orchestration |
 | `forensic_scanner.py` | Deterministic ASC 606 exception scanner |
 | `journal_generator.py` | Journal entry generation and totals |
 | `executive_report.py` | PDF, HTML, and CSV report generation |
 | `sample_data.py` | Sample portfolio of 12 deals |
+| `requirements.txt` | Python runtime dependencies |
+| `packages.txt` | Streamlit Cloud system packages (`tesseract-ocr`, `poppler-utils`) |
 | `.streamlit/config.toml` | Theme and server configuration |
 
 ## Note
